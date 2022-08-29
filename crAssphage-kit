@@ -1,0 +1,203 @@
+#!/usr/bin/perl -w
+
+use strict;
+use warnings;
+use Getopt::Std;
+use File::Basename;
+use Cwd 'abs_path';
+
+my $version = "0.0.1";
+
+my %opts = (l => 70000,
+            e => 0.001);
+getopts('l:e:', \%opts);
+
+&usage if (-t STDIN && @ARGV != 2);
+
+my  $nucl           =  shift @ARGV;
+my  $project        =  shift @ARGV;
+
+my  $minlen         =  $opts{l};
+my  $evalue         =  $opts{e};
+
+my  $runs           =  qq{$project/runs};
+my  $prodigal       =  qq{$project/prodigal};
+my  $report         =  qq{$project/report};
+my  $hmmscan        =  qq{$project/hmmscan};
+
+my  $binaries       =  dirname( abs_path($0) ) . '/binaries';
+my  $db             =  dirname( abs_path($0) ) . '/db';
+
+submit();
+
+exit;
+
+sub submit {
+
+    make_fs();
+    prodigal_run();
+    hmmscan_run();
+    crAssphage_run();
+
+}
+
+sub make_fs {
+
+    my $cmd = qq{mkdir -p $runs
+                          $prodigal
+                          $hmmscan
+                          $report};
+       $cmd =~ s/\n\s+/ /msg;
+    system $cmd;
+
+}
+
+sub prodigal_run {
+
+    my $sh = qq{$runs/prodigal.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    print EXPORT nflit();
+    print EXPORT prodigal();
+    print EXPORT gff2bed();
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}
+
+sub nflit {
+
+    my $cmd   = qq{$binaries/seqtk seq            \
+                      -L $minlen                  \
+                      $nucl                       \
+                   >$report/nucl.fasta;\n};
+       $cmd   =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub prodigal {
+
+    my $cmd = qq{$binaries/prodigal-gv            \
+                   -a $prodigal/prodigal.pep      \
+                   -d $prodigal/prodigal.fna      \
+                   -f gff                         \
+                   -m -q                          \
+                   -p meta                        \
+                   -i $report/nucl.fasta          \
+                   -o $prodigal/prodigal.gff ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg; 
+    return $cmd;
+}
+
+sub gff2bed {
+
+    my $cmd = qq{$binaries/prodigal-tk gff        \
+                    $prodigal/prodigal.gff        \
+                 |$binaries/prodigal-tk bed       \
+                    -                             \
+                >$prodigal/prodigal.bed;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub hmmscan_run {
+
+    my $sh    =  qq{$runs/hmmscan.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    print EXPORT hmmscan();
+    print EXPORT hmmtab();
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}
+
+sub hmmscan {
+
+    my $cmd = qq{$binaries/hmmscan               \
+                   -E $evalue                    \
+                   --domtblout $hmmscan/hmmscan.domtblout  \
+                   -o  /dev/null                 \
+                   $db/crAssphage.hmm            \
+                   $prodigal/prodigal.pep;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub hmmtab {
+
+    my $cmd = qq{$binaries/hmm-utils hmmscan     \
+                     $hmmscan/hmmscan.domtblout  \
+                >$hmmscan/hmmscan.txt ;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub crAssphage_run {
+
+    my $sh    =  qq{$runs/crAssphage.sh};
+    open (EXPORT, ">$sh") || die "[ERR]: can't open $sh $!\n";
+
+    print EXPORT hits();
+    print EXPORT crAssphage();
+
+    close EXPORT;
+    system qq{bash $sh};
+
+}
+
+sub hits {
+
+    my $cmd = qq{cut -f1,3                       \
+                    $hmmscan/hmmscan.txt         \
+                |tail -n +2                      \
+                |$binaries/tsv-utils annotation  \
+                    -c 2                         \
+                    $db/crAssphage.txt -         \
+                |$binaries/tsv-utils annotation  \
+                    -c 1                         \
+                    <($binaries/tsv-utils cut    \
+                    -f4,1 $prodigal/prodigal.bed \
+                    )  -                         \
+                |$binaries/tsv-utils bins        \
+                    -t 4 -s 3 -                  \
+                >$report/hits.txt;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub crAssphage {
+
+    my $cmd = qq{$binaries/tsv-utils select     \
+                   -f2 $report/hits.txt 3       \
+                |cut -f1                        \
+                |$binaries/fastx-utils subseq   \
+                    $report/nucl.fasta  -       \
+                >$report/crAssphage.fasta;\n};
+       $cmd =~ s/\s+\n\s+/ /msg;
+    return $cmd;
+
+}
+
+sub usage {
+
+  print STDERR qq(
+
+Program: crAssphage-kit: crAssphage using HMMSCAN. 
+Version: $version
+Contact: ZHANG LEI <zhanglei\@logictek.cn>\n
+Usage:   crAssphage-kit [options] <contigs> <project>\n
+Options: -l INT    minimal contigs length, default: [70000].
+         -e DOUBLE minimal alignment evalue. default: [0.001].
+
+);
+  exit;
+
+}
